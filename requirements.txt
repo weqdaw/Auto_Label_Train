@@ -1,0 +1,7 @@
+fastapi>=0.100.0
+uvicorn>=0.22.0
+ultralytics>=8.0.0
+python-multipart>=0.0.6
+websockets>=11.0.3
+psutil>=5.9.0
+gputil>=1.4.0
