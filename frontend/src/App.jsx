@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Database, FileBox, Play, Terminal, HelpCircle, Activity } from 'lucide-react';
+import { LayoutDashboard, Database, FileBox, Play, Terminal, HelpCircle, Activity, Tag } from 'lucide-react';
 import Dashboard from './components/Dashboard';
 import DatasetManager from './components/DatasetManager';
 import ModelHub from './components/ModelHub';
 import TrainingWorkspace from './components/TrainingWorkspace';
+import LabelingTaskCenter from './components/LabelingTaskCenter';
+import LabelingWorkspace from './components/LabelingWorkspace';
 
 export default function App() {
   const [view, setView] = useState('dashboard');
@@ -12,6 +14,8 @@ export default function App() {
   const [models, setModels] = useState([]);
   const [runs, setRuns] = useState([]);
   const [selectedRunId, setSelectedRunId] = useState(null);
+  const [labelingTasks, setLabelingTasks] = useState([]);
+  const [selectedLabelingTask, setSelectedLabelingTask] = useState(null);
 
   // Initial Fetches
   useEffect(() => {
@@ -19,14 +23,17 @@ export default function App() {
     fetchDatasets();
     fetchModels();
     fetchRuns();
+    fetchLabelingTasks();
 
     // Set up polling intervals
     const statusInterval = setInterval(fetchSystemStatus, 4000);
     const runsInterval = setInterval(fetchRuns, 3000);
+    const labelingInterval = setInterval(fetchLabelingTasks, 5000);
 
     return () => {
       clearInterval(statusInterval);
       clearInterval(runsInterval);
+      clearInterval(labelingInterval);
     };
   }, []);
 
@@ -67,6 +74,16 @@ export default function App() {
       setRuns(data);
     } catch (err) {
       console.error("Failed to fetch runs:", err);
+    }
+  };
+
+  const fetchLabelingTasks = async () => {
+    try {
+      const res = await fetch('/api/label/tasks');
+      const data = await res.json();
+      setLabelingTasks(data);
+    } catch (err) {
+      console.error("Failed to fetch labeling tasks:", err);
     }
   };
 
@@ -156,6 +173,41 @@ export default function App() {
     }
   };
 
+  const handleCreateLabelingTask = async (taskData) => {
+    const res = await fetch('/api/label/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(taskData)
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || "创建任务失败");
+    }
+    fetchLabelingTasks();
+  };
+
+  const handleDeleteLabelingTask = async (taskId) => {
+    const res = await fetch(`/api/label/tasks/${taskId}`, {
+      method: 'DELETE'
+    });
+    if (res.ok) {
+      fetchLabelingTasks();
+    }
+  };
+
+  const handleExportLabelingTask = async (taskId) => {
+    const res = await fetch(`/api/label/tasks/${taskId}/export`, {
+      method: 'POST'
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || "导出标注集失败");
+    }
+    fetchDatasets();
+    fetchLabelingTasks();
+    return data;
+  };
+
   return (
     <div className="app-container">
       {/* Sidebar */}
@@ -182,6 +234,15 @@ export default function App() {
           >
             <Database size={18} />
             <span>数据集管理</span>
+          </li>
+
+          <li 
+            className={`nav-item ${['labeling', 'labeling-workspace'].includes(view) ? 'active' : ''}`}
+            onClick={() => setView('labeling')}
+            id="nav-labeling"
+          >
+            <Tag size={18} />
+            <span>本地数据标注</span>
           </li>
 
           <li 
@@ -250,6 +311,28 @@ export default function App() {
             onDownloadModel={handleDownloadModel} 
             onUploadModel={handleUploadModel}
             fetchModels={fetchModels}
+          />
+        )}
+        {view === 'labeling' && (
+          <LabelingTaskCenter 
+            tasks={labelingTasks}
+            onCreateTask={handleCreateLabelingTask}
+            onDeleteTask={handleDeleteLabelingTask}
+            onExportTask={handleExportLabelingTask}
+            onEnterWorkspace={(task) => {
+              setSelectedLabelingTask(task);
+              setView('labeling-workspace');
+            }}
+          />
+        )}
+        {view === 'labeling-workspace' && selectedLabelingTask && (
+          <LabelingWorkspace 
+            task={selectedLabelingTask}
+            onBack={() => {
+              setSelectedLabelingTask(null);
+              setView('labeling');
+              fetchLabelingTasks();
+            }}
           />
         )}
         {view === 'training' && (

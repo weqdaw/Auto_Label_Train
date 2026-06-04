@@ -10,6 +10,7 @@ import json
 
 from backend.dataset_manager import DatasetManager
 from backend.yolo_manager import YoloManager
+from backend.label_manager import LabelManager
 
 app = FastAPI(title="YOLO Auto-Trainer API")
 
@@ -25,6 +26,7 @@ app.add_middleware(
 # Managers
 dataset_manager = DatasetManager()
 yolo_manager = YoloManager()
+label_manager = LabelManager()
 
 # API Routes
 
@@ -170,6 +172,90 @@ async def download_run_weight(run_id: str, filename: str):
         filename=filename,
         media_type="application/octet-stream"
     )
+
+# Labeling Tasks Endpoints
+
+@app.get("/api/label/tasks")
+async def list_label_tasks():
+    return label_manager.list_tasks()
+
+@app.post("/api/label/tasks")
+async def create_label_task(payload: dict):
+    name = payload.get("name")
+    task_type = payload.get("type")
+    image_folder_path = payload.get("image_folder_path")
+    classes = payload.get("classes", [])
+
+    if not name or not task_type or not image_folder_path:
+        raise HTTPException(status_code=400, detail="name, type, and image_folder_path are required")
+    if task_type not in ["detection", "segmentation"]:
+        raise HTTPException(status_code=400, detail="type must be detection or segmentation")
+
+    try:
+        return label_manager.create_task(name, task_type, image_folder_path, classes)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/label/tasks/{task_id}")
+async def delete_label_task(task_id: str):
+    success = label_manager.delete_task(task_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Labeling task not found")
+    return {"status": "deleted"}
+
+@app.get("/api/label/tasks/{task_id}/images")
+async def get_label_task_images(task_id: str):
+    try:
+        return label_manager.get_task_images(task_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+@app.get("/api/label/tasks/{task_id}/image-content/{filename}")
+async def get_label_image_content(task_id: str, filename: str):
+    try:
+        img_path = label_manager.get_image_path(task_id, filename)
+        return FileResponse(img_path)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Image file not found")
+
+@app.get("/api/label/tasks/{task_id}/annotations/{filename}")
+async def get_image_annotations(task_id: str, filename: str):
+    try:
+        return label_manager.get_image_annotations(task_id, filename)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+@app.post("/api/label/tasks/{task_id}/annotations/{filename}")
+async def save_image_annotations(task_id: str, filename: str, payload: dict):
+    try:
+        success = label_manager.save_image_annotations(task_id, filename, payload)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save annotations")
+        return {"status": "saved"}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+@app.post("/api/label/tasks/{task_id}/export")
+async def export_label_task(task_id: str, payload: dict = None):
+    val_split = 0.2
+    if payload:
+        val_split = float(payload.get("val_split", 0.2))
+
+    try:
+        res = label_manager.export_task_to_dataset(task_id, val_split)
+        return res
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # WebSocket connection for real-time progress updates
 @app.websocket("/api/runs/{run_id}/ws")
