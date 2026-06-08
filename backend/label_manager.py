@@ -32,7 +32,7 @@ class LabelManager:
 
     def _save_tasks(self, tasks: List[Dict[str, Any]]):
         with open(TASKS_FILE, "w", encoding="utf-8") as f:
-            json.dump(tasks, f, indent=2, ensure_ok=False)
+            json.dump(tasks, f, indent=2, ensure_ascii=False)
 
     def list_tasks(self) -> List[Dict[str, Any]]:
         """List all labeling tasks with image counts and progress."""
@@ -195,7 +195,7 @@ class LabelManager:
         ann_file = task_ann_dir / f"{filename}.json"
         try:
             with open(ann_file, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ok=False)
+                json.dump(payload, f, indent=2, ensure_ascii=False)
             return True
         except Exception:
             return False
