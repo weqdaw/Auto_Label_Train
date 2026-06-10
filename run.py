@@ -87,14 +87,14 @@ def main():
         backend_proc = run_process_and_log(backend_cmd, ROOT_DIR, "BACKEND")
         
         # Step 4: Start React Frontend
-        log("正在启动 React 前端服务 (端口 5173)...")
+        log("正在启动 React 前端服务 (端口 5500)...")
         frontend_cmd = "npm run dev"
         frontend_proc = run_process_and_log(frontend_cmd, FRONTEND_DIR, "FRONTEND")
         
         # Step 5: Wait and open browser
         time.sleep(2)
         log("打开浏览器访问 YOLO 训练控制台...")
-        webbrowser.open("http://127.0.0.1:5173")
+        webbrowser.open("http://127.0.0.1:5500")
         
         log("控制台已启动。按 Ctrl+C 终止所有服务。")
         while True:

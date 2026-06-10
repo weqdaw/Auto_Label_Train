@@ -10,7 +10,8 @@ export default function TrainingWorkspace({
   cancelTraining, 
   deleteRun,
   selectedRunId,
-  setSelectedRunId
+  setSelectedRunId,
+  token
 }) {
   const [modelName, setModelName] = useState('');
   const [datasetName, setDatasetName] = useState('');
@@ -57,7 +58,7 @@ export default function TrainingWorkspace({
 
     // Set up WebSocket connection for real-time logs
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/runs/${selectedRunId}/ws`;
+    const wsUrl = `${protocol}//${window.location.host}/api/runs/${selectedRunId}/ws?token=${token}`;
     
     let ws;
     try {
@@ -88,7 +89,7 @@ export default function TrainingWorkspace({
       if (ws) ws.close();
       if (interval) clearInterval(interval);
     };
-  }, [selectedRunId]);
+  }, [selectedRunId, token]);
 
   // Scroll to bottom of logs when logs update
   useEffect(() => {
@@ -99,7 +100,9 @@ export default function TrainingWorkspace({
 
   const fetchRunDetails = async (rid) => {
     try {
-      const res = await fetch(`/api/runs`);
+      const res = await fetch(`/api/runs`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const allRuns = await res.json();
       const current = allRuns.find(r => r.run_id === rid);
       if (current) {
@@ -113,7 +116,9 @@ export default function TrainingWorkspace({
 
   const fetchWeights = async (rid) => {
     try {
-      const res = await fetch(`/api/runs/${rid}/weights`);
+      const res = await fetch(`/api/runs/${rid}/weights`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       setWeights(data.weights || []);
     } catch (err) {}
@@ -568,7 +573,7 @@ export default function TrainingWorkspace({
                         weights.map(w => (
                           <a 
                             key={w.name}
-                            href={`/api/runs/${selectedRunId}/weights/download/${w.name}`}
+                            href={`/api/runs/${selectedRunId}/weights/download/${w.name}?token=${token}`}
                             className="btn btn-cyan"
                             style={{ padding: '8px 16px', fontSize: '0.85rem' }}
                           >

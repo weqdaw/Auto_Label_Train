@@ -4,8 +4,7 @@ import { ArrowLeft, Save, ZoomIn, ZoomOut, RotateCcw, Trash2, HelpCircle, AlertC
 export default function LabelingWorkspace({ 
   task, 
   onBack, 
-  onSaveAnnotations,
-  fetchTaskImages 
+  token
 }) {
   const [images, setImages] = useState([]);
   const [activeImageIdx, setActiveImageIdx] = useState(0);
@@ -39,7 +38,9 @@ export default function LabelingWorkspace({
 
   const loadTaskImages = async () => {
     try {
-      const res = await fetch(`/api/label/tasks/${task.task_id}/images`);
+      const res = await fetch(`/api/label/tasks/${task.task_id}/images`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       setImages(data);
       if (data.length > 0) {
@@ -65,7 +66,9 @@ export default function LabelingWorkspace({
 
   const loadAnnotations = async (filename) => {
     try {
-      const res = await fetch(`/api/label/tasks/${task.task_id}/annotations/${filename}`);
+      const res = await fetch(`/api/label/tasks/${task.task_id}/annotations/${filename}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       setAnnotations(data);
     } catch (e) {
@@ -362,7 +365,10 @@ export default function LabelingWorkspace({
     try {
       const res = await fetch(`/api/label/tasks/${task.task_id}/annotations/${activeImage.filename}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({
           filename: activeImage.filename,
           width: naturalWidth,
@@ -520,7 +526,7 @@ export default function LabelingWorkspace({
               {/* Invisible Image to capture natural size */}
               <img 
                 ref={imageRef}
-                src={`/api/label/tasks/${task.task_id}/image-content/${activeImage.filename}`}
+                src={`/api/label/tasks/${task.task_id}/image-content/${activeImage.filename}?token=${token}`}
                 style={{ display: 'none' }}
                 onLoad={handleImageLoad}
                 alt="source-loader"
@@ -545,7 +551,7 @@ export default function LabelingWorkspace({
               >
                 {/* Image underlay */}
                 <image
-                  href={`/api/label/tasks/${task.task_id}/image-content/${activeImage.filename}`}
+                  href={`/api/label/tasks/${task.task_id}/image-content/${activeImage.filename}?token=${token}`}
                   width={naturalWidth}
                   height={naturalHeight}
                 />

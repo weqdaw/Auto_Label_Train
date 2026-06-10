@@ -6,16 +6,31 @@ export default function LabelingTaskCenter({
   onCreateTask, 
   onDeleteTask, 
   onExportTask,
-  onEnterWorkspace 
+  onEnterWorkspace,
+  userRole,
+  token
 }) {
   const [name, setName] = useState('');
   const [type, setType] = useState('detection');
   const [folderPath, setFolderPath] = useState('');
   const [classInput, setClassInput] = useState('');
   const [classes, setClasses] = useState(['car', 'person', 'dog']); // default classes
+  const [assignedUsers, setAssignedUsers] = useState([]);
+  const [dbUsers, setDbUsers] = useState([]);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
   const [exportingStates, setExportingStates] = useState({}); // task_id -> boolean
+
+  React.useEffect(() => {
+    if (userRole === 'admin') {
+      fetch('/api/admin/users', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+        .then(res => res.json())
+        .then(data => setDbUsers(data))
+        .catch(err => console.error(err));
+    }
+  }, [userRole, token]);
 
   const handleAddClass = (e) => {
     e.preventDefault();
@@ -44,6 +59,10 @@ export default function LabelingTaskCenter({
       setError("请至少定义一个类别标签！");
       return;
     }
+    if (assignedUsers.length === 0) {
+      setError("请至少选择指派一名标注人员！");
+      return;
+    }
 
     setCreating(true);
     setError(null);
@@ -52,12 +71,13 @@ export default function LabelingTaskCenter({
         name,
         type,
         image_folder_path: folderPath,
-        classes
+        classes,
+        assigned_users: assignedUsers
       });
       // Clear form
       setName('');
       setFolderPath('');
-      // Keep classes as is, or reset
+      setAssignedUsers([]);
     } catch (err) {
       setError(err.message || "创建任务失败");
     } finally {
@@ -84,7 +104,8 @@ export default function LabelingTaskCenter({
 
       <div className="grid-cols-3">
         {/* Create Task Form */}
-        <div className="card" style={{ gridColumn: 'span 1', height: 'fit-content' }}>
+        {userRole === 'admin' && (
+          <div className="card" style={{ gridColumn: 'span 1', height: 'fit-content' }}>
           <h2 className="section-title">
             <Plus size={20} style={{ color: 'var(--color-primary)' }} />
             新建标注任务
@@ -196,6 +217,42 @@ export default function LabelingTaskCenter({
               </div>
             </div>
 
+            <div className="form-group">
+              <label className="form-label">指派标注人员</label>
+              <div style={{ 
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '8px', 
+                maxHeight: '120px', 
+                overflowY: 'auto',
+                border: '1.5px solid var(--border-light)',
+                padding: '10px 14px',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: 'var(--bg-input)'
+              }}>
+                {dbUsers.length === 0 ? (
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>暂无注册人员，请让员工先注册账号。</span>
+                ) : (
+                  dbUsers.map(u => (
+                    <label key={u.username} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem', cursor: 'pointer' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={assignedUsers.includes(u.username)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setAssignedUsers([...assignedUsers, u.username]);
+                          } else {
+                            setAssignedUsers(assignedUsers.filter(usr => usr !== u.username));
+                          }
+                        }}
+                      />
+                      <span>{u.display_name} ({u.username})</span>
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+
             <button 
               type="submit" 
               className="btn btn-primary" 
@@ -221,9 +278,10 @@ export default function LabelingTaskCenter({
             )}
           </form>
         </div>
+        )}
 
         {/* Task Grid */}
-        <div className="card" style={{ gridColumn: 'span 2' }}>
+        <div className="card" style={{ gridColumn: userRole === 'admin' ? 'span 2' : 'span 3' }}>
           <h2 className="section-title">
             <Layers size={20} style={{ color: 'var(--color-cyan)' }} />
             任务列表 ({tasks.length})
@@ -268,17 +326,19 @@ export default function LabelingTaskCenter({
                         </div>
                       </div>
 
-                      <button 
-                        className="btn btn-danger" 
-                        style={{ padding: '6px', borderRadius: 'var(--radius-sm)' }}
-                        onClick={() => {
-                          if (window.confirm(`确定要删除标注任务 "${task.name}" 吗？此操作不可逆，将彻底清除该任务的所有标注文件！`)) {
-                            onDeleteTask(task.task_id);
-                          }
-                        }}
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      {userRole === 'admin' && (
+                        <button 
+                          className="btn btn-danger" 
+                          style={{ padding: '6px', borderRadius: 'var(--radius-sm)' }}
+                          onClick={() => {
+                            if (window.confirm(`确定要删除标注任务 "${task.name}" 吗？此操作不可逆，将彻底清除该任务的所有标注文件！`)) {
+                              onDeleteTask(task.task_id);
+                            }
+                          }}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
                     </div>
 
                     {/* Progress Bar */}
@@ -303,14 +363,16 @@ export default function LabelingTaskCenter({
                       </div>
 
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button 
-                          className="btn btn-outline"
-                          style={{ padding: '8px 14px', fontSize: '0.85rem' }}
-                          disabled={task.labeled_images === 0 || exportingStates[task.task_id]}
-                          onClick={() => handleExport(task.task_id)}
-                        >
-                          <Download size={14} /> {exportingStates[task.task_id] ? "正在导出..." : "导出为训练集"}
-                        </button>
+                        {userRole === 'admin' && (
+                          <button 
+                            className="btn btn-outline"
+                            style={{ padding: '8px 14px', fontSize: '0.85rem' }}
+                            disabled={task.labeled_images === 0 || exportingStates[task.task_id]}
+                            onClick={() => handleExport(task.task_id)}
+                          >
+                            <Download size={14} /> {exportingStates[task.task_id] ? "正在导出..." : "导出为训练集"}
+                          </button>
+                        )}
                         <button 
                           className="btn btn-primary"
                           style={{ padding: '8px 14px', fontSize: '0.85rem' }}

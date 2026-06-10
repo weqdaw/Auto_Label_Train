@@ -1,16 +1,18 @@
 import os
 import asyncio
 import psutil
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect, Depends, Header, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from typing import Optional
 import json
 
 from backend.dataset_manager import DatasetManager
 from backend.yolo_manager import YoloManager
 from backend.label_manager import LabelManager
+from backend.user_manager import UserManager
 
 app = FastAPI(title="YOLO Auto-Trainer API")
 
@@ -27,11 +29,94 @@ app.add_middleware(
 dataset_manager = DatasetManager()
 yolo_manager = YoloManager()
 label_manager = LabelManager()
+user_manager = UserManager()
 
-# API Routes
+# Authentication Dependencies
+
+async def get_current_user(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None)
+):
+    actual_token = None
+    if authorization and authorization.startswith("Bearer "):
+        actual_token = authorization.split(" ")[1]
+    elif token:
+        actual_token = token
+        
+    if not actual_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未登录，请求未授权！"
+        )
+    user = user_manager.verify_token(actual_token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="会话已过期，请重新登录！"
+        )
+    return user
+
+async def require_admin(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="仅管理员有权执行此操作！"
+        )
+    return current_user
+
+# --- AUTH ROUTES ---
+
+@app.post("/api/auth/register")
+async def register(payload: dict):
+    username = payload.get("username")
+    password = payload.get("password")
+    display_name = payload.get("display_name", "")
+    try:
+        res = user_manager.register_user(username, password, display_name)
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/auth/login")
+async def login(payload: dict):
+    username = payload.get("username")
+    password = payload.get("password")
+    try:
+        res = user_manager.authenticate_user(username, password)
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/auth/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+# --- ADMIN USER MANAGEMENT ROUTES ---
+
+@app.get("/api/admin/users")
+async def list_users(current_user: dict = Depends(require_admin)):
+    return user_manager.list_users()
+
+@app.delete("/api/admin/users/{username}")
+async def delete_user(username: str, current_user: dict = Depends(require_admin)):
+    try:
+        success = user_manager.delete_user(username)
+        if not success:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"status": "deleted"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- SYSTEM ROUTES ---
 
 @app.get("/api/system/status")
-async def get_system_status():
+async def get_system_status(current_user: dict = Depends(get_current_user)):
     """Get system CPU, RAM, and GPU status."""
     cpu_percent = psutil.cpu_percent(interval=None)
     memory = psutil.virtual_memory()
@@ -58,13 +143,14 @@ async def get_system_status():
         "gpu": gpu_info
     }
 
-# Model Endpoints
+# --- MODEL HUB ROUTES (Admin Only) ---
+
 @app.get("/api/models")
-async def list_models():
+async def list_models(current_user: dict = Depends(get_current_user)):
     return yolo_manager.list_models()
 
 @app.post("/api/models/download")
-async def download_model(payload: dict):
+async def download_model(payload: dict, current_user: dict = Depends(require_admin)):
     model_name = payload.get("model_name")
     if not model_name:
         raise HTTPException(status_code=400, detail="model_name is required")
@@ -75,7 +161,7 @@ async def download_model(payload: dict):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/models/upload")
-async def upload_model(file: UploadFile = File(...)):
+async def upload_model(file: UploadFile = File(...), current_user: dict = Depends(require_admin)):
     try:
         content = await file.read()
         res = yolo_manager.save_custom_model(file.filename, content)
@@ -83,13 +169,14 @@ async def upload_model(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# Dataset Endpoints
+# --- DATASET ROUTES (Admin Only) ---
+
 @app.get("/api/datasets")
-async def list_datasets():
+async def list_datasets(current_user: dict = Depends(require_admin)):
     return dataset_manager.list_datasets()
 
 @app.post("/api/datasets/upload")
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(file: UploadFile = File(...), current_user: dict = Depends(require_admin)):
     if not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP format datasets are supported.")
     try:
@@ -100,19 +187,20 @@ async def upload_dataset(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/datasets/{name}")
-async def delete_dataset(name: str):
+async def delete_dataset(name: str, current_user: dict = Depends(require_admin)):
     success = dataset_manager.delete_dataset(name)
     if not success:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return {"status": "deleted"}
 
-# Training Endpoints
+# --- TRAINING RUN ROUTES (Admin Only) ---
+
 @app.get("/api/runs")
-async def list_runs():
+async def list_runs(current_user: dict = Depends(require_admin)):
     return yolo_manager.list_runs()
 
 @app.post("/api/runs/start")
-async def start_training(payload: dict):
+async def start_training(payload: dict, current_user: dict = Depends(require_admin)):
     model_name = payload.get("model_name")
     dataset_name = payload.get("dataset_name")
     epochs = int(payload.get("epochs", 10))
@@ -123,7 +211,6 @@ async def start_training(payload: dict):
     if not model_name or not dataset_name:
         raise HTTPException(status_code=400, detail="model_name and dataset_name are required")
 
-    # Get dataset info to find yaml
     ds_info = dataset_manager.get_dataset_info(dataset_name)
     if not ds_info or not ds_info["is_valid"]:
         raise HTTPException(status_code=400, detail="Invalid dataset folder or data.yaml missing")
@@ -145,25 +232,25 @@ async def start_training(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/runs/{run_id}/cancel")
-async def cancel_training(run_id: str):
+async def cancel_training(run_id: str, current_user: dict = Depends(require_admin)):
     success = yolo_manager.cancel_training(run_id)
     if not success:
         raise HTTPException(status_code=404, detail="Active training run not found")
     return {"status": "cancelled"}
 
 @app.delete("/api/runs/{run_id}")
-async def delete_run(run_id: str):
+async def delete_run(run_id: str, current_user: dict = Depends(require_admin)):
     success = yolo_manager.delete_run(run_id)
     if not success:
         raise HTTPException(status_code=404, detail="Run not found")
     return {"status": "deleted"}
 
 @app.get("/api/runs/{run_id}/weights")
-async def get_run_weights(run_id: str):
+async def get_run_weights(run_id: str, current_user: dict = Depends(require_admin)):
     return yolo_manager.get_run_weights(run_id)
 
 @app.get("/api/runs/{run_id}/weights/download/{filename}")
-async def download_run_weight(run_id: str, filename: str):
+async def download_run_weight(run_id: str, filename: str, current_user: dict = Depends(require_admin)):
     weight_path = Path(yolo_manager.RUNS_DIR) / run_id / "weights" / filename
     if not weight_path.exists():
         raise HTTPException(status_code=404, detail=f"Weight file {filename} not found for run {run_id}")
@@ -173,26 +260,29 @@ async def download_run_weight(run_id: str, filename: str):
         media_type="application/octet-stream"
     )
 
-# Labeling Tasks Endpoints
+# --- LABELING TASKS ROUTES ---
 
 @app.get("/api/label/tasks")
-async def list_label_tasks():
-    return label_manager.list_tasks()
+async def list_label_tasks(current_user: dict = Depends(get_current_user)):
+    return label_manager.list_tasks(username=current_user["username"], role=current_user["role"])
 
 @app.post("/api/label/tasks")
-async def create_label_task(payload: dict):
+async def create_label_task(payload: dict, current_user: dict = Depends(require_admin)):
     name = payload.get("name")
     task_type = payload.get("type")
     image_folder_path = payload.get("image_folder_path")
     classes = payload.get("classes", [])
+    assigned_users = payload.get("assigned_users", [])
 
     if not name or not task_type or not image_folder_path:
         raise HTTPException(status_code=400, detail="name, type, and image_folder_path are required")
     if task_type not in ["detection", "segmentation"]:
         raise HTTPException(status_code=400, detail="type must be detection or segmentation")
+    if not assigned_users:
+        raise HTTPException(status_code=400, detail="请至少指派一名标注人员")
 
     try:
-        return label_manager.create_task(name, task_type, image_folder_path, classes)
+        return label_manager.create_task(name, task_type, image_folder_path, classes, assigned_users)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -201,48 +291,54 @@ async def create_label_task(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/label/tasks/{task_id}")
-async def delete_label_task(task_id: str):
+async def delete_label_task(task_id: str, current_user: dict = Depends(require_admin)):
     success = label_manager.delete_task(task_id)
     if not success:
         raise HTTPException(status_code=404, detail="Labeling task not found")
     return {"status": "deleted"}
 
 @app.get("/api/label/tasks/{task_id}/images")
-async def get_label_task_images(task_id: str):
+async def get_label_task_images(task_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        return label_manager.get_task_images(task_id)
+        return label_manager.get_task_images(task_id, username=current_user["username"], role=current_user["role"])
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found")
 
 @app.get("/api/label/tasks/{task_id}/image-content/{filename}")
-async def get_label_image_content(task_id: str, filename: str):
+async def get_label_image_content(task_id: str, filename: str, current_user: dict = Depends(get_current_user)):
     try:
-        img_path = label_manager.get_image_path(task_id, filename)
+        img_path = label_manager.get_image_path(task_id, filename, username=current_user["username"], role=current_user["role"])
         return FileResponse(img_path)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Image file not found")
 
 @app.get("/api/label/tasks/{task_id}/annotations/{filename}")
-async def get_image_annotations(task_id: str, filename: str):
+async def get_image_annotations(task_id: str, filename: str, current_user: dict = Depends(get_current_user)):
     try:
-        return label_manager.get_image_annotations(task_id, filename)
+        return label_manager.get_image_annotations(task_id, filename, username=current_user["username"], role=current_user["role"])
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 @app.post("/api/label/tasks/{task_id}/annotations/{filename}")
-async def save_image_annotations(task_id: str, filename: str, payload: dict):
+async def save_image_annotations(task_id: str, filename: str, payload: dict, current_user: dict = Depends(get_current_user)):
     try:
-        success = label_manager.save_image_annotations(task_id, filename, payload)
+        success = label_manager.save_image_annotations(task_id, filename, payload, username=current_user["username"], role=current_user["role"])
         if not success:
             raise HTTPException(status_code=500, detail="Failed to save annotations")
         return {"status": "saved"}
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 @app.post("/api/label/tasks/{task_id}/export")
-async def export_label_task(task_id: str, payload: dict = None):
+async def export_label_task(task_id: str, payload: dict = None, current_user: dict = Depends(require_admin)):
     val_split = 0.2
     if payload:
         val_split = float(payload.get("val_split", 0.2))
@@ -257,29 +353,37 @@ async def export_label_task(task_id: str, payload: dict = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# WebSocket connection for real-time progress updates
+# --- WEBSOCKETS ---
+
 @app.websocket("/api/runs/{run_id}/ws")
 async def run_websocket(websocket: WebSocket, run_id: str):
+    # Authenticate WebSocket connection via token in query parameters
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+        
+    user = user_manager.verify_token(token)
+    if not user or user["role"] != "admin":
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await websocket.accept()
     
-    # Send initial data
     try:
         run_data = yolo_manager.get_run_progress(run_id)
         await websocket.send_json(run_data)
         
-        # Poll progress file and send updates
         last_epoch = -1
         last_progress = -1.0
         last_status = ""
         
         while True:
-            # We fetch full state
             run_data = yolo_manager.get_run_progress(run_id)
             current_status = run_data.get("status")
             current_epoch = run_data.get("epoch")
             current_progress = run_data.get("progress")
             
-            # Send updates if anything changed or if it's running
             if (current_status != last_status or 
                 current_epoch != last_epoch or 
                 current_progress != last_progress or 
@@ -291,7 +395,6 @@ async def run_websocket(websocket: WebSocket, run_id: str):
                 last_epoch = current_epoch
                 last_progress = current_progress
             
-            # Stop polling if finished
             if current_status in ["completed", "failed", "cancelled", "finished"]:
                 break
                 
@@ -305,12 +408,12 @@ async def run_websocket(websocket: WebSocket, run_id: str):
         except Exception:
             pass
 
-# Serve static frontend files in production if they exist
+# --- FRONTEND ASSETS ---
+
 frontend_build_path = Path(__file__).parent.parent / "frontend" / "dist"
 if frontend_build_path.exists():
     app.mount("/", StaticFiles(directory=str(frontend_build_path), html=True), name="frontend")
 else:
-    # Minimal home endpoint if frontend is not built
     @app.get("/")
     async def index():
         return {"message": "YOLO Trainer Backend Running. Build frontend to serve web interface."}
